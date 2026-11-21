@@ -1295,6 +1295,10 @@ function App() {
         // The stretch picked under the cost line (seconds); absent = whole video.
         source_start: data.sourceStart ?? null,
         source_end: data.sourceEnd ?? null,
+        // A paid clipping campaign's own brief (Whop/ContentRewards/Reach),
+        // pasted as-is: folded into scoring/copywriting so clips and hooks
+        // follow the campaign's rules, not just generic virality.
+        campaign_brief: data.campaignBrief || null,
       };
 
       if (data.type === 'url') {

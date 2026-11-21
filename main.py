@@ -32,7 +32,8 @@ import layout_picker
 import llm_backend
 import yt_account
 import twitch_signals
-from clip_selection import (build_transcript_windows, clip_count_targets,
+from clip_selection import (build_transcript_windows, campaign_brief_section,
+                            clip_count_targets,
                             clip_duration_bounds, dedupe_overlapping,
                             score_batches, shortlist_target,
                             snap_clip_to_words, trim_to_best,
@@ -2322,7 +2323,7 @@ def score_batch_size():
     return 3 if llm_backend.active() else 8
 
 
-def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
+def get_viral_clips(transcript_result, video_duration, viewer_clips=None, campaign_brief=None):
     """Two-pass clip selection: score transcript windows, then detail the best.
 
     Windowing gives even coverage on long videos (a single call over the whole
@@ -2397,10 +2398,14 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
                 out.append(item)
             return out
 
+        # Built once: a campaign brief is a job-level constraint, identical
+        # for every batch/window, not something that varies per prompt call.
+        brief_section = campaign_brief_section(campaign_brief)
+
         def _score_prompt(ws):
             return gemini_worker.SCORE_PROMPT_TEMPLATE.format(
                 video_duration=video_duration, language=language,
-                windows_json=json.dumps(_payload(ws), ensure_ascii=False))
+                windows_json=json.dumps(_payload(ws), ensure_ascii=False)) + brief_section
 
         for batch in score_batches(windows, SCORE_BATCH):
             scored.extend(_run_stage_split(
@@ -2434,7 +2439,7 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
                     video_duration=video_duration, language=language,
                     min_clips=lo, max_clips=hi,
                     min_secs=min_secs, max_secs=max_secs,
-                    windows_json=json.dumps(_payload(ws), ensure_ascii=False))
+                    windows_json=json.dumps(_payload(ws), ensure_ascii=False)) + brief_section
             return build
 
         shorts = _run_stage_split(client, model_name, shortlist,
@@ -2646,7 +2651,7 @@ def _visual_pass(client, model_name, video_path, duration, language,
                 pass
 
 
-def get_visual_clips(video_path, video_duration, language="en", viewer_clips=None):
+def get_visual_clips(video_path, video_duration, language="en", viewer_clips=None, campaign_brief=None):
     """Clip a SILENT video by vision: Gemini watches the footage and picks the
     most engaging visual moments (no transcript). Returns the same
     {"shorts", "cost_analysis"} shape as get_viral_clips, or None.
@@ -2695,6 +2700,7 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
                      f"{video_duration / 60:.0f} min; VISION_MAX_SEGMENTS)"
                      if covered < float(video_duration) - 1 else ""))
         per_min = max(1, math.ceil(v_min_clips / len(segments)))
+        brief_section = campaign_brief_section(campaign_brief)
         clean, costs = [], []
         tmp_dir = os.path.join(os.path.dirname(os.path.abspath(video_path)),
                                f".vision_{uuid.uuid4().hex[:8]}")
@@ -2707,7 +2713,7 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
                     shorts, cost = _visual_pass(
                         client, model_name, proxy, round(s1 - s0, 3), language,
                         per_min, v_max_clips, v_min_secs, v_max_secs,
-                        hint=_viewer_hint(viewer_clips, s0, s1 - s0))
+                        hint=_viewer_hint(viewer_clips, s0, s1 - s0) + brief_section)
                 except gemini_worker.GeminiBlockedError:
                     raise
                 except Exception as e:
@@ -2835,6 +2841,13 @@ if __name__ == '__main__':
     if args.url and not args.skip_analysis and not args.prepare_only:
         viewer_clips = twitch_signals.viewer_clips_for_job(args.url, 0)
 
+    # A clipping-campaign's own brief (set by app.py as CAMPAIGN_BRIEF from
+    # the dashboard's Campaign Brief field): free text folded into the
+    # scoring/detail prompts and the vision pass alike, so a campaign's
+    # required elements, banned content, tone and hashtags govern selection
+    # and copy on top of generic virality. Unset/blank changes nothing.
+    campaign_brief = os.environ.get("CAMPAIGN_BRIEF", "").strip() or None
+
     # 1. Get Input Video
     if args.url:
         # For multi-clip runs, treat --output as an OUTPUT DIRECTORY (create it if needed).
@@ -2866,7 +2879,8 @@ if __name__ == '__main__':
                 early["transcript"] = t
                 if audio_duration and not speech_is_sparse(t, audio_duration):
                     early["clips"] = get_viral_clips(t, audio_duration,
-                                                     viewer_clips=viewer_clips)
+                                                     viewer_clips=viewer_clips,
+                                                     campaign_brief=campaign_brief)
             except Exception as e:
                 print(f"   ℹ️ Early transcription skipped ({type(e).__name__}: {e}).")
                 early["transcript"] = early["clips"] = None
@@ -3077,9 +3091,11 @@ if __name__ == '__main__':
             print("♻️ Using the clips Gemini picked while the video downloaded.")
             clips_data = early_clips
         elif transcript is not None:
-            clips_data = get_viral_clips(transcript, duration, viewer_clips=viewer_clips)
+            clips_data = get_viral_clips(transcript, duration, viewer_clips=viewer_clips,
+                                         campaign_brief=campaign_brief)
         else:
-            clips_data = get_visual_clips(input_video, duration, viewer_clips=viewer_clips)
+            clips_data = get_visual_clips(input_video, duration, viewer_clips=viewer_clips,
+                                          campaign_brief=campaign_brief)
 
         if not clips_data or 'shorts' not in clips_data:
             # Deliberately fail instead of reframing the whole video: that path

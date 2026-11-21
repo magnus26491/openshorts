@@ -213,6 +213,49 @@ def clip_duration_bounds():
     return round(lo, 3), round(hi, 3)
 
 
+def campaign_brief_section(brief):
+    """Extra prompt text folding a clipping-campaign's own brief into the
+    scoring, detail and vision passes, or "" when there is none (every
+    existing call site defaults to no brief, so this is purely additive —
+    unset, the prompts are byte-for-byte what they were before).
+
+    A campaign brief (pasted by the user from Whop/ContentRewards/Reach etc.)
+    carries rules generic virality scoring does not know about: a required
+    product or person in every clip, a banned topic or tone, a minimum clip
+    length, required hashtags, platform rules. Appended as plain text after
+    the template is formatted (same pattern as ``_viewer_hint`` in main.py),
+    never interpolated into the template itself, so a brief containing
+    ``{``/``}`` or stray format fields cannot break ``str.format``.
+
+    Capped at ``MAX_BRIEF_CHARS``: these briefs are a paragraph or two of
+    rules, not a document, and an unbounded brief would blow up prompt cost
+    and crowd out the transcript windows it is supposed to constrain."""
+    MAX_BRIEF_CHARS = 4000
+    text = str(brief or "").strip()
+    if not text:
+        return ""
+    if len(text) > MAX_BRIEF_CHARS:
+        text = text[:MAX_BRIEF_CHARS] + "\n[...brief truncated...]"
+    return (
+        "\n\nCAMPAIGN BRIEF — HARD REQUIREMENTS:\n"
+        "The clips from this job are for the specific paid clipping campaign "
+        "below. Its rules sit ON TOP of the usual virality judgement above, "
+        "and WIN when the two conflict:\n"
+        f"{text}\n"
+        "- Score or select a window/clip LOW (or skip it) if it could not "
+        "satisfy this brief — missing a required person/product/element, "
+        "showing something the brief bans, wrong tone — even if it would "
+        "otherwise be a strong stand-alone moment on generic virality alone.\n"
+        "- When writing hooks, titles and descriptions: stay inside the "
+        "brief's required tone and angle, name any required element the "
+        "brief says must appear, and work any hashtags or tags the brief "
+        "requires into the TikTok/Instagram description text (not the hook "
+        "overlay, which stays short).\n"
+        "- If the brief states a minimum or maximum clip length, prefer it "
+        "within the allowed band above; never exceed the band's own limits.\n"
+    )
+
+
 def compact_words(words, precision=2):
     """Round word timestamps for prompts — full float precision wastes tokens."""
     return [

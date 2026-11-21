@@ -155,6 +155,14 @@ TOOLS = [
                     "type": "number", "minimum": 10, "maximum": 180,
                     "description": "Maximum clip length in seconds (default 60). Must be ≥ 5s above the minimum.",
                 },
+                "campaign_brief": {
+                    "type": "string", "maxLength": 8000,
+                    "description": "Optional free text from a paid clipping campaign's own brief "
+                                   "(Whop, ContentRewards, Reach, etc.) — required elements, banned "
+                                   "topics/tone, hashtags, minimum length. Folded into the AI's "
+                                   "scoring and copywriting so clips and captions follow the "
+                                   "campaign's rules, not just generic virality.",
+                },
             },
             "required": ["confirm_rights"],
         },
@@ -400,7 +408,7 @@ async def _tool_process_video(client, args):
         "webhook_url": args.get("webhook_url"),
         "webhook_secret": args.get("webhook_secret"),
     }
-    for k in ("target_clips", "clip_min_seconds", "clip_max_seconds", "captions"):
+    for k in ("target_clips", "clip_min_seconds", "clip_max_seconds", "captions", "campaign_brief"):
         if args.get(k) is not None:
             body[k] = args[k]
     # Same default as the dashboard: hook on unless the caller opts out. The

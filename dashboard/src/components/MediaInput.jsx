@@ -52,6 +52,13 @@ export default function MediaInput({ onProcess, isProcessing }) {
     const [targetClips, setTargetClips] = useState('');
     const [clipMinSeconds, setClipMinSeconds] = useState('');
     const [clipMaxSeconds, setClipMaxSeconds] = useState('');
+    // Free text pasted from a paid clipping campaign's own brief (Whop,
+    // ContentRewards, Reach, etc.): folded into the AI's scoring and
+    // copywriting, so required elements, banned content and hashtags are
+    // honored on top of generic virality. Not persisted — a brief is
+    // per-video, not a standing preference like auto-hook/layout below.
+    const [campaignBrief, setCampaignBrief] = useState('');
+    const CAMPAIGN_BRIEF_MAX = 8000;
     // Auto-hook: burn the AI hook text into every clip. On by default; the
     // choice persists so turning it off sticks across sessions.
     const [autoHook, setAutoHook] = useState(() => {
@@ -132,6 +139,7 @@ export default function MediaInput({ onProcess, isProcessing }) {
             layout,
             sourceStart: range ? Math.round(range.start) : null,
             sourceEnd: range ? Math.round(range.end) : null,
+            campaignBrief: campaignBrief.trim() || null,
         };
         try {
             localStorage.setItem('os_auto_hook', autoHook ? '1' : '0');
@@ -315,7 +323,7 @@ export default function MediaInput({ onProcess, isProcessing }) {
                     >
                         <ChevronDown size={14} className={`transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
                         advanced options
-                        {(targetClips || clipMinSeconds || clipMaxSeconds || !autoHook) && (
+                        {(targetClips || clipMinSeconds || clipMaxSeconds || !autoHook || campaignBrief) && (
                             <span className="text-brass">·</span>
                         )}
                     </button>
@@ -323,6 +331,19 @@ export default function MediaInput({ onProcess, isProcessing }) {
                         /* Stacked on a phone: three number fields side by side leaves
                            ~100px each, which crushes both label and value. */
                         <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-2 animate-fade">
+                            <div className="col-span-1 sm:col-span-3">
+                                <p className="eyebrow mb-1.5">campaign brief (optional)</p>
+                                <textarea
+                                    value={campaignBrief}
+                                    onChange={(e) => setCampaignBrief(e.target.value.slice(0, CAMPAIGN_BRIEF_MAX))}
+                                    placeholder="Paste the brief from a paid clipping campaign (Whop, ContentRewards, Reach, etc.) — required elements, banned topics, tone, hashtags, minimum length. The AI will score and write clips against these rules, on top of its usual virality judgement."
+                                    rows={4}
+                                    className="input-field resize-y"
+                                />
+                                <p className="mt-1 text-[11px] text-muted text-right">
+                                    {campaignBrief.length}/{CAMPAIGN_BRIEF_MAX}
+                                </p>
+                            </div>
                             <div>
                                 <p className="eyebrow mb-1.5">clips to aim for</p>
                                 <input

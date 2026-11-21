@@ -6069,6 +6069,7 @@ async def process_endpoint(
     auto_hook_style: Optional[str] = Form(None),
     thumbnail_session_id: Optional[str] = Form(None),
     captions: Optional[str] = Form(None),
+    campaign_brief: Optional[str] = Form(None),
     upload_id: Optional[str] = Form(None),
     max_minutes: Optional[str] = Form(None),
     source_start: Optional[str] = Form(None),
@@ -6103,6 +6104,7 @@ async def process_endpoint(
         auto_hook_style = body.get("auto_hook_style")
         thumbnail_session_id = body.get("thumbnail_session_id")
         captions = body.get("captions")
+        campaign_brief = body.get("campaign_brief")
         upload_id = body.get("upload_id")
         max_minutes = body.get("max_minutes")
         source_start = body.get("source_start")
@@ -6257,6 +6259,24 @@ async def process_endpoint(
     if captions is not None and str(captions).lower() in ("0", "false", "no"):
         env["AUTO_CAPTIONS"] = "0"
         print(f"[captions] job={job_id} auto-captions off")
+
+    # Paid clipping-campaign brief (Whop/ContentRewards/Reach etc.), pasted by
+    # the user: folded into the Gemini scoring/detail/vision prompts so the
+    # campaign's own required elements, banned content, tone and hashtags
+    # govern clip selection and copy, not just generic virality. Forwarded as
+    # an env var the same way as every other per-job option above (main.py
+    # runs as a child process per job and reads its options from its env).
+    # 400 on an absurd paste (the real cap that matters is enforced again,
+    # lower, inside the prompt builder) rather than silently truncating
+    # something the user will wonder why half of it was ignored.
+    if campaign_brief is not None:
+        campaign_brief = str(campaign_brief).strip()
+        if len(campaign_brief) > 8000:
+            raise HTTPException(status_code=400,
+                                detail="campaign_brief must be 8000 characters or fewer")
+        if campaign_brief:
+            env["CAMPAIGN_BRIEF"] = campaign_brief
+            print(f"[campaign-brief] job={job_id} chars={len(campaign_brief)}")
 
     input_path = None
     if url:

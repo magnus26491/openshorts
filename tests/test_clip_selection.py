@@ -5,6 +5,7 @@ import pytest
 
 from clip_selection import (
     build_transcript_windows,
+    campaign_brief_section,
     clip_count_targets,
     dedupe_overlapping,
     score_batches,
@@ -309,6 +310,51 @@ class TestShortlistTarget:
     def test_degenerate_input_does_not_crash(self):
         assert shortlist_target(None) == 3
         assert shortlist_target("nonsense") == 3
+
+
+class TestCampaignBriefSection:
+    """A paid clipping campaign's own brief, pasted by the user, is appended
+    AFTER every prompt template is formatted — never interpolated into the
+    template itself — so it is purely additive (no brief = old prompt,
+    byte-for-byte) and safe regardless of what punctuation the brief holds."""
+
+    def test_no_brief_is_the_empty_string(self):
+        assert campaign_brief_section(None) == ""
+        assert campaign_brief_section("") == ""
+        assert campaign_brief_section("   ") == ""
+
+    def test_brief_text_is_carried_verbatim(self):
+        section = campaign_brief_section("Kitsch must be in every clip.")
+        assert "Kitsch must be in every clip." in section
+
+    def test_brief_is_marked_as_overriding_generic_virality(self):
+        section = campaign_brief_section("No raw reposts.")
+        assert "HARD REQUIREMENTS" in section
+        assert "WIN when the two conflict" in section
+
+    def test_oversized_brief_is_truncated_not_rejected(self):
+        section = campaign_brief_section("x" * 10_000)
+        assert len(section) < 10_000
+        assert "truncated" in section
+
+    def test_brief_with_format_braces_cannot_break_str_format(self):
+        # A brief pasted from a campaign page can legitimately contain
+        # {curly braces} (JSON examples, a literal set notation in copy).
+        # Since the section is concatenated AFTER .format(), not passed
+        # through it, this must never raise.
+        gw = pytest.importorskip("gemini_worker")
+        brief = "Required caption shape: {\"hook\": \"...\"} — use it exactly."
+        prompt = gw.DETAIL_PROMPT_TEMPLATE.format(
+            video_duration=300, language="en", min_clips=3, max_clips=6,
+            min_secs=15.0, max_secs=60.0, windows_json="[]"
+        ) + campaign_brief_section(brief)
+        assert brief in prompt
+
+    def test_unset_brief_leaves_the_formatted_prompt_untouched(self):
+        gw = pytest.importorskip("gemini_worker")
+        base = gw.SCORE_PROMPT_TEMPLATE.format(
+            video_duration=300, language="en", windows_json="[]")
+        assert base + campaign_brief_section(None) == base
 
 
 # --- vision_segments: silent footage longer than the model window ---------- #
