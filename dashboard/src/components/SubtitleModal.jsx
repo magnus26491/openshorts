@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Loader2, Plus, X } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import RemotionPreview from './RemotionPreview';
 import Modal from './ui/Modal';
@@ -115,6 +115,146 @@ const swatchClass = (selected) =>
         ? 'ring-2 ring-[color:var(--color-accent)] ring-offset-2 ring-offset-[color:var(--color-paper-2)]'
         : 'ring-1 ring-[color:var(--color-rule-2)] hover:ring-[color:var(--color-accent)]'}`;
 
+// How long a freshly inserted word lasts, and the floor neither neighbour is
+// ever shrunk below. 120ms is about the shortest a karaoke word still reads
+// as its own beat; 250ms is a reasonable single-word duration to default to
+// when there's no better signal (nothing to anchor against at a clip edge).
+const MIN_WORD_MS = 120;
+const DEFAULT_WORD_MS = 250;
+
+// Timing for a word inserted between `prev` and `next` (either may be null
+// at the start/end of the clip). This only ever touches `prev`/`next`
+// themselves, never any other word, so recovering one missing word can't
+// drift the sync of the rest of the caption track the way the old "edit the
+// whole block of text and spread it evenly over the clip" approach did.
+function computeInsertTiming(prev, next, totalDurationMs) {
+    if (prev && next) {
+        const gap = next.startMs - prev.endMs;
+        if (gap >= MIN_WORD_MS) {
+            // Silence already sits here — almost certainly the exact stretch
+            // of audio the missing word was spoken in. Use it as-is.
+            return { word: { startMs: prev.endMs, endMs: next.startMs }, prevPatch: null, nextPatch: null };
+        }
+        // Not enough of a gap (back-to-back or overlapping words): borrow a
+        // sliver from whichever neighbour has slack above MIN_WORD_MS,
+        // never shrinking either one below that floor.
+        const need = MIN_WORD_MS - Math.max(gap, 0);
+        const prevSlack = Math.max(0, (prev.endMs - prev.startMs) - MIN_WORD_MS);
+        const nextSlack = Math.max(0, (next.endMs - next.startMs) - MIN_WORD_MS);
+        const fromPrev = Math.min(prevSlack, need);
+        const fromNext = Math.min(nextSlack, need - fromPrev);
+        const newPrevEnd = prev.endMs - fromPrev;
+        const newNextStart = next.startMs + fromNext;
+        // If neither neighbour had slack (fast back-to-back speech), the new
+        // word still gets whatever sliver is left rather than being refused —
+        // it renders briefly instead of not at all.
+        return {
+            word: {
+                startMs: Math.min(newPrevEnd, newNextStart),
+                endMs: Math.max(newNextStart, newPrevEnd + 1),
+            },
+            prevPatch: fromPrev > 0 ? { endMs: newPrevEnd } : null,
+            nextPatch: fromNext > 0 ? { startMs: newNextStart } : null,
+        };
+    }
+    if (prev && !next) {
+        // Inserting after the last word: start where it left off, run the
+        // default length, clamped to the clip's own duration when known.
+        const startMs = prev.endMs;
+        let endMs = startMs + DEFAULT_WORD_MS;
+        if (totalDurationMs != null && endMs > totalDurationMs && totalDurationMs > startMs) {
+            endMs = totalDurationMs;
+        }
+        return { word: { startMs, endMs }, prevPatch: null, nextPatch: null };
+    }
+    if (!prev && next) {
+        // Inserting before the first word: end where it starts, default
+        // length back from there, clamped at 0.
+        const endMs = next.startMs;
+        const startMs = Math.max(0, endMs - DEFAULT_WORD_MS);
+        return { word: { startMs, endMs: Math.max(endMs, startMs + 1) }, prevPatch: null, nextPatch: null };
+    }
+    // No words at all yet.
+    return { word: { startMs: 0, endMs: DEFAULT_WORD_MS }, prevPatch: null, nextPatch: null };
+}
+
+// One editable caption word. Text edits never touch startMs/endMs — the
+// common "fix a word whisper got wrong" case carries zero timing risk.
+function WordChip({ text, onChange, onDelete }) {
+    const [value, setValue] = useState(text);
+    useEffect(() => setValue(text), [text]);
+    const commit = () => {
+        const trimmed = value.trim();
+        if (trimmed && trimmed !== text) onChange(trimmed);
+        else setValue(text);
+    };
+    return (
+        <span className="inline-flex items-center gap-1 rounded-input border border-rule2 bg-[color:var(--color-paper-2)] pl-2 pr-1 py-0.5 group">
+            <input
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                onBlur={commit}
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') { commit(); e.currentTarget.blur(); }
+                    if (e.key === 'Escape') setValue(text);
+                }}
+                size={Math.max(1, value.length)}
+                dir="auto"
+                className="bg-transparent outline-none text-sm text-ink min-w-[1ch]"
+            />
+            <button
+                type="button"
+                onClick={onDelete}
+                title="Remove word"
+                className="opacity-40 group-hover:opacity-100 hover:text-ink2 text-muted transition-opacity"
+            >
+                <X size={11} />
+            </button>
+        </span>
+    );
+}
+
+// The gap between two words (or before the first / after the last) where a
+// missing word can be dropped back in. Idle, it's a small low-opacity "+" —
+// always rendered rather than hover-only, so it works on touch too.
+function InsertGap({ onInsert, label }) {
+    const [editing, setEditing] = useState(false);
+    const [value, setValue] = useState('');
+    const commit = () => {
+        const trimmed = value.trim();
+        if (trimmed) onInsert(trimmed);
+        setValue('');
+        setEditing(false);
+    };
+    if (!editing) {
+        return (
+            <button
+                type="button"
+                onClick={() => setEditing(true)}
+                title={label || 'Insert a missing word here'}
+                className="w-4 h-5 flex items-center justify-center text-muted opacity-40 hover:opacity-100 hover:text-ink2 transition-opacity shrink-0"
+            >
+                <Plus size={12} />
+            </button>
+        );
+    }
+    return (
+        <input
+            autoFocus
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+                if (e.key === 'Enter') commit();
+                if (e.key === 'Escape') { setValue(''); setEditing(false); }
+            }}
+            placeholder="word"
+            dir="auto"
+            className="w-16 bg-transparent border-b border-dashed border-rule2 outline-none text-sm text-ink shrink-0"
+        />
+    );
+}
+
 export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll, onRemove, isProcessing, videoUrl, jobId, clipIndex, existingHook, bulkCount = 0, bulkProgress }) {
     // Opens on the look the clip already has (the Default preset), so
     // "apply" without touching anything changes nothing.
@@ -170,10 +310,15 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
     // Remotion preview state
     const [captions, setCaptions] = useState([]);
     const [originalCaptions, setOriginalCaptions] = useState([]);
-    const [editableText, setEditableText] = useState('');
+    const [edited, setEdited] = useState(false);
     const [durationSec, setDurationSec] = useState(30);
     const [captionsLoading, setCaptionsLoading] = useState(false);
     const [useRemotionPreview, setUseRemotionPreview] = useState(false);
+    // Stable React keys for caption words, independent of array position —
+    // position shifts on every insert/delete, and keying on it there would
+    // remount (and drop focus from) whichever chip the user is mid-edit on.
+    const nextKeyRef = useRef(0);
+    const withKeys = (words) => words.map((w) => ({ ...w, _key: nextKeyRef.current++ }));
 
     // Fetch word-level captions when modal opens
     useEffect(() => {
@@ -184,9 +329,9 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
             .then((res) => res.ok ? res.json() : null)
             .then((data) => {
                 if (data && data.captions && data.captions.length > 0) {
-                    setCaptions(data.captions);
                     setOriginalCaptions(data.captions);
-                    setEditableText(data.captions.map(c => c.text).join(' '));
+                    setCaptions(withKeys(data.captions));
+                    setEdited(false);
                     setDurationSec(data.durationSec || 30);
                     setUseRemotionPreview(true);
                 } else {
@@ -197,26 +342,39 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
             .finally(() => setCaptionsLoading(false));
     }, [isOpen, jobId, clipIndex]);
 
-    // When user edits text, redistribute words across original timestamps
-    const handleTextEdit = (newText) => {
-        setEditableText(newText);
-        const newWords = newText.split(/\s+/).filter(w => w.length > 0);
-        if (newWords.length === 0 || originalCaptions.length === 0) {
-            setCaptions([]);
-            return;
-        }
+    // Per-word edits. Each only ever changes what it says it changes: a text
+    // edit never moves a timestamp, a delete never retimes its neighbours,
+    // and an insert retimes at most the one neighbour it had to borrow a
+    // sliver from (computeInsertTiming) — never the rest of the clip.
+    const updateWordText = (key, text) => {
+        setCaptions((cs) => cs.map((c) => (c._key === key ? { ...c, text } : c)));
+        setEdited(true);
+    };
 
-        // Distribute new words across the time span of original captions
-        const totalDurationMs = originalCaptions[originalCaptions.length - 1].endMs - originalCaptions[0].startMs;
-        const startMs = originalCaptions[0].startMs;
-        const wordDurationMs = totalDurationMs / newWords.length;
+    const deleteWord = (key) => {
+        setCaptions((cs) => cs.filter((c) => c._key !== key));
+        setEdited(true);
+    };
 
-        const newCaptions = newWords.map((word, i) => ({
-            text: word,
-            startMs: Math.round(startMs + i * wordDurationMs),
-            endMs: Math.round(startMs + (i + 1) * wordDurationMs),
-        }));
-        setCaptions(newCaptions);
+    const insertWordAt = (index, rawText) => {
+        const text = rawText.trim();
+        if (!text) return;
+        setCaptions((cs) => {
+            const prev = index > 0 ? cs[index - 1] : null;
+            const next = index < cs.length ? cs[index] : null;
+            const { word, prevPatch, nextPatch } = computeInsertTiming(prev, next, durationSec * 1000);
+            const out = cs.slice();
+            if (prevPatch) out[index - 1] = { ...out[index - 1], ...prevPatch };
+            if (nextPatch) out[index] = { ...out[index], ...nextPatch };
+            out.splice(index, 0, { text, startMs: word.startMs, endMs: word.endMs, _key: nextKeyRef.current++ });
+            return out;
+        });
+        setEdited(true);
+    };
+
+    const resetCaptions = () => {
+        setCaptions(withKeys(originalCaptions));
+        setEdited(false);
     };
 
     if (!isOpen) return null;
@@ -416,23 +574,50 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
                         {/* Editable Transcript (collapsible) */}
                         {useRemotionPreview && (
                             <div>
-                                <button
-                                    type="button"
-                                    onClick={() => setShowTextEditor(!showTextEditor)}
-                                    className="w-full flex items-center justify-between mb-2"
-                                >
-                                    <span className="eyebrow">Edit text ({captions.length} words)</span>
-                                    <span className={`text-muted transition-transform ${showTextEditor ? 'rotate-180' : ''}`}>▾</span>
-                                </button>
+                                <div className="w-full flex items-center justify-between mb-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowTextEditor(!showTextEditor)}
+                                        className="flex items-center gap-1.5"
+                                    >
+                                        <span className="eyebrow">Edit text ({captions.length} words)</span>
+                                        <span className={`text-muted transition-transform ${showTextEditor ? 'rotate-180' : ''}`}>▾</span>
+                                    </button>
+                                    {edited && (
+                                        <button
+                                            type="button"
+                                            onClick={resetCaptions}
+                                            className="text-xs text-muted underline underline-offset-2 lowercase hover:text-ink2"
+                                        >
+                                            reset to original
+                                        </button>
+                                    )}
+                                </div>
                                 {showTextEditor && (
-                                    <textarea
-                                        value={editableText}
-                                        onChange={(e) => handleTextEdit(e.target.value)}
-                                        rows={5}
-                                        dir="auto"
-                                        className="input-field resize-none leading-relaxed animate-fade"
-                                        placeholder="Edit subtitle text..."
-                                    />
+                                    <div className="animate-fade">
+                                        <p className="text-xs text-muted mb-2 leading-relaxed">
+                                            Click a word to fix it, × to remove it, or + between words to drop in one whisper missed — each stays in sync with the clip.
+                                        </p>
+                                        <div className="flex flex-wrap items-center gap-y-1.5 p-2 rounded-input border border-rule2 bg-[color:var(--color-paper-2)] max-h-48 overflow-y-auto custom-scrollbar">
+                                            <InsertGap
+                                                label="Insert a word at the start"
+                                                onInsert={(text) => insertWordAt(0, text)}
+                                            />
+                                            {captions.map((c, i) => (
+                                                <React.Fragment key={c._key}>
+                                                    <WordChip
+                                                        text={c.text}
+                                                        onChange={(text) => updateWordText(c._key, text)}
+                                                        onDelete={() => deleteWord(c._key)}
+                                                    />
+                                                    <InsertGap onInsert={(text) => insertWordAt(i + 1, text)} />
+                                                </React.Fragment>
+                                            ))}
+                                            {captions.length === 0 && (
+                                                <span className="text-xs text-muted">No words — insert one with the + above.</span>
+                                            )}
+                                        </div>
+                                    </div>
                                 )}
                             </div>
                         )}
@@ -550,11 +735,10 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
 
                     <div className="mt-5 shrink-0 space-y-2">
                         {(() => {
-                            // Text edits must survive the server render path too
-                            // (issue #69): send the edited words whenever the text
-                            // differs from what the transcript produced.
-                            const textEdited = originalCaptions.length > 0
-                                && editableText.trim() !== originalCaptions.map((c) => c.text).join(' ').trim();
+                            // Word edits must survive the server render path too
+                            // (issue #69): send the edited words (minus the local
+                            // React key) whenever any word was changed, added or
+                            // removed.
                             const styleOptions = {
                                 position, fontSize, fontName, fontColor, borderColor, borderWidth, bgColor, bgOpacity,
                                 // Karaoke burn (server-side ASS render)
@@ -562,7 +746,9 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, onApplyAll,
                                 reveal: !oneWord && reveal, shadow, maxChars, maxDuration,
                                 // Remotion data
                                 remotion: useRemotionPreview ? subtitleConfig : null,
-                                captions: textEdited ? captions : null,
+                                captions: edited
+                                    ? captions.map(({ _key, ...w }) => w)
+                                    : null,
                             };
                             const bulkRunning = bulkProgress?.running;
                             return (
