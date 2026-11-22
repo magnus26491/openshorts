@@ -29,6 +29,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+import clip_selection
 import mcp_ui
 import social_platforms
 from subtitles import CAPTION_PRESETS, line_budget
@@ -148,12 +149,18 @@ TOOLS = [
                                    "Default: the AI decides (usually 2-6).",
                 },
                 "clip_min_seconds": {
-                    "type": "number", "minimum": 5, "maximum": 175,
+                    "type": "number", "minimum": 5,
+                    "maximum": clip_selection.CLIP_MAX_SECONDS_CEILING - 5,
                     "description": "Minimum clip length in seconds (default 15).",
                 },
                 "clip_max_seconds": {
-                    "type": "number", "minimum": 10, "maximum": 180,
-                    "description": "Maximum clip length in seconds (default 60). Must be ≥ 5s above the minimum.",
+                    "type": "number", "minimum": 10,
+                    "maximum": clip_selection.CLIP_MAX_SECONDS_CEILING,
+                    "description": "Maximum clip length in seconds (default 60, up to 900/15min). "
+                                   "Must be ≥ 5s above the minimum. Note: YouTube Shorts and "
+                                   "Instagram Reels only treat a clip ≤180s as a Short/Reel; "
+                                   "longer clips still render but post as regular long-form video "
+                                   "on those two platforms.",
                 },
                 "campaign_brief": {
                     "type": "string", "maxLength": 8000,

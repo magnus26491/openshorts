@@ -32,6 +32,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 from s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
 import recut
+import clip_selection
 import layout_ranges
 import watermarked
 import media_auth
@@ -6239,8 +6240,10 @@ async def process_endpoint(
         return int(val) if integer else val
 
     n_clips = _gen_control(target_clips, "target_clips", 1, 15, integer=True)
-    min_secs = _gen_control(clip_min_seconds, "clip_min_seconds", 5, 175)
-    max_secs = _gen_control(clip_max_seconds, "clip_max_seconds", 10, 180)
+    min_secs = _gen_control(clip_min_seconds, "clip_min_seconds", 5,
+                            clip_selection.CLIP_MAX_SECONDS_CEILING - 5)
+    max_secs = _gen_control(clip_max_seconds, "clip_max_seconds", 10,
+                            clip_selection.CLIP_MAX_SECONDS_CEILING)
     if min_secs is not None and max_secs is not None and max_secs < min_secs + 5:
         raise HTTPException(status_code=400,
                             detail="clip_max_seconds must be at least 5s above clip_min_seconds")
@@ -8689,8 +8692,12 @@ async def add_subtitles(req: SubtitleRequest, request: Request):
     # verbatim (issue #69 — edits used to be dropped on this path).
     caption_words = None
     if req.words:
-        if len(req.words) > 2000:
-            raise HTTPException(status_code=400, detail="Too many caption words (max 2000).")
+        # 4000 covers a full 900s (15 min) clip at ~260 wpm with headroom —
+        # raised alongside CLIP_MAX_SECONDS_CEILING so a full-length edit on
+        # the longest allowed clip doesn't 400 here (15 min * 180-220 wpm is
+        # 2700-3300 words).
+        if len(req.words) > 4000:
+            raise HTTPException(status_code=400, detail="Too many caption words (max 4000).")
         # Leading space = Whisper's word-boundary convention; without it the
         # block collector treats each word as a continuation fragment and
         # glues the whole line together.

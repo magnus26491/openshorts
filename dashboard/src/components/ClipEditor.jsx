@@ -203,7 +203,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     const sourceAvailable = !!edl?.source?.available;
     const sourceDuration = edl?.source?.duration || 0;
     const canonical = useMemo(() => edl?.canonical_range || { start: 0, end: 0 }, [edl]);
-    const limits = edl?.limits || { max_segments: 12, min_segment_seconds: MIN_SEGMENT_SECONDS, max_total_seconds: 180 };
+    const limits = edl?.limits || { max_segments: 12, min_segment_seconds: MIN_SEGMENT_SECONDS, max_total_seconds: 900 };
     const minSeg = limits.min_segment_seconds || MIN_SEGMENT_SECONDS;
 
     // The source panel is on screen only when there IS a source and the user

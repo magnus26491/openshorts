@@ -24,14 +24,18 @@ import subprocess
 import time
 import uuid
 
+import clip_selection
+
 from ffmpeg_utils import (METADATA_SCRUB, QUALITY_FAST, audio_encode_args,
                           video_encode_args)
 
 # EDL limits. Deliberately generous — the editor is for humans fixing cuts,
-# not for stitching feature films.
+# not for stitching feature films. MAX_TOTAL_SECONDS tracks the same ceiling
+# clip_selection enforces on AI-selected clips, so a manual recut can't
+# exceed what the job's own render pipeline is designed to produce.
 MAX_SEGMENTS = 12
 MIN_SEGMENT_SECONDS = 0.5
-MAX_TOTAL_SECONDS = 180.0
+MAX_TOTAL_SECONDS = clip_selection.CLIP_MAX_SECONDS_CEILING
 
 # Segments may start/end a hair outside the canonical range through float
 # round-tripping; treat them as inside.

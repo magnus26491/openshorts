@@ -189,6 +189,15 @@ def vision_segments(video_duration, segment_seconds, max_segments):
             for i in range(n_kept)]
 
 
+#: Hard ceiling for a single clip, in seconds. 900 = 15 minutes. Past the
+#: classic Shorts/Reels band (<=180s) this still renders fine — the GPU
+#: render pass and FFmpeg are duration-agnostic — but YouTube Shorts and
+#: Instagram Reels cap a "Short"/"Reel" at 180s themselves; anything longer
+#: posts as a regular long-form upload on those two, by platform rule, not
+#: by anything OpenShorts does. TikTok has no such ceiling.
+CLIP_MAX_SECONDS_CEILING = 900.0
+
+
 def clip_duration_bounds():
     """The clip length band (seconds) the selection prompts and word-snapping
     enforce. ``CLIP_MIN_SECONDS`` / ``CLIP_MAX_SECONDS`` override the classic
@@ -206,10 +215,10 @@ def clip_duration_bounds():
 
     lo = _read("CLIP_MIN_SECONDS", 15.0)
     hi = _read("CLIP_MAX_SECONDS", 60.0)
-    lo = min(max(lo, 5.0), 175.0)
-    hi = min(max(hi, 10.0), 180.0)
+    lo = min(max(lo, 5.0), CLIP_MAX_SECONDS_CEILING - 5.0)
+    hi = min(max(hi, 10.0), CLIP_MAX_SECONDS_CEILING)
     if hi < lo + 5.0:  # keep a real band: degenerate ranges starve the model
-        hi = min(180.0, lo + 5.0)
+        hi = min(CLIP_MAX_SECONDS_CEILING, lo + 5.0)
     return round(lo, 3), round(hi, 3)
 
 
