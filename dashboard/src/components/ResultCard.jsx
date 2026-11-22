@@ -60,6 +60,31 @@ function formatDuration(clip) {
     return `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
 }
 
+// YouTube Shorts and Instagram Reels only count a clip <=180s as a
+// Short/Reel — their own platform rule, not anything OpenShorts enforces
+// (checked 28 Oct 2026, see dashboard/seo/clip-tools.js). A longer clip
+// still renders and posts fine; it just lands as a regular long-form
+// video on those two instead of a Short/Reel. TikTok has no such ceiling
+// at any length this app can produce, so it always fits.
+const SHORT_FORM_CEILING_SECONDS = 180;
+
+function platformFit(clip) {
+    const secs = clipDurationSeconds(clip);
+    if (!Number.isFinite(secs)) return null;
+    if (secs <= SHORT_FORM_CEILING_SECONDS) {
+        return {
+            label: 'shorts · reels · tiktok',
+            warn: false,
+            title: "Fits as a YouTube Short, an Instagram Reel, and a TikTok — each platform's own Shorts/Reels length limit is 3 minutes.",
+        };
+    }
+    return {
+        label: 'tiktok only (>3min)',
+        warn: true,
+        title: "Over 3 minutes: YouTube and Instagram will post this as a regular long-form video, not a Short/Reel — that's their length cutoff, not a setting here. TikTok has no such ceiling.",
+    };
+}
+
 export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onModeChanged = null, onUpgrade = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
@@ -856,6 +881,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         : currentVideoUrl;
 
     const durationReadout = formatDuration(clip);
+    const fit = platformFit(clip);
 
     return (
         <div className="card overflow-hidden flex flex-col md:flex-row group hover:border-rule2 transition-colors animate-fade md:min-h-[420px]" style={{ animationDelay: `${index * 0.1}s` }}>
@@ -978,6 +1004,14 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     )}
                     <div className="flex flex-wrap gap-1.5">
                         {durationReadout && <span className="readout bg-paper3 px-2 py-0.5 rounded-full shrink-0">{durationReadout}</span>}
+                        {fit && (
+                            <span
+                                className={`readout px-2 py-0.5 rounded-full shrink-0 ${fit.warn ? 'bg-brass/10 text-brass' : 'bg-paper3'}`}
+                                title={fit.title}
+                            >
+                                {fit.label}
+                            </span>
+                        )}
                         {resolution && <span className="readout bg-paper3 px-2 py-0.5 rounded-full shrink-0">{resolution}</span>}
                         {isPro && <span className="readout bg-paper3 px-2 py-0.5 rounded-full shrink-0 text-brass">pro mode</span>}
                         {!isPro && clip.pro_suggested && <span className="readout bg-paper3 px-2 py-0.5 rounded-full shrink-0 text-brass">pro recommended</span>}
