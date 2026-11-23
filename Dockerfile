@@ -101,7 +101,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Deno JS runtime — required by yt-dlp for some extractor challenges.
 COPY --from=denoland/deno:bin@sha256:b507583d3c68ba69f3ed2ce5969ae5b8b70f43421c781279c7aea06435263543 /deno /usr/local/bin/deno
 
-# Helper token provider, baked in as a local Node script (no separate service).
+# Helper token provider, baked in locally (no separate Railway service).
+# serve.py starts server/build/main.js as a persistent local HTTP server at
+# boot (127.0.0.1 only) and points BGUTIL_BASE_URL at it; BGUTIL_SCRIPT_PATH
+# below is the fallback generate_once.js cold-start path if that server
+# doesn't come up, kept exactly as before this existed.
 RUN git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider /opt/bgutil-provider \
     && cd /opt/bgutil-provider/server \
     && npm install --no-audit --no-fund \

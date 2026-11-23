@@ -11,7 +11,12 @@ step before any per-GB attempt: the fallback clients through a static
 ## yt-dlp clients
 
 **The client list is explicit and shared** (`yt_clients.py`: `default,mweb` +
-the bgutil PO token provider). With account cookies yt-dlp's own defaults are
+the bgutil PO token provider). The provider itself runs as a persistent local
+HTTP server (`serve.py:_start_bgutil_sidecar`, 127.0.0.1 only), started once at
+boot, so every token request reuses one warmed session instead of cold-starting
+`generate_once.js` per call; the script path stays installed as the automatic
+fallback if the server doesn't come up. With account cookies yt-dlp's own
+defaults are
 `tv_downgraded` + `web`, and on a share of videos both come back UNPLAYABLE /
 SABR-only, which yt-dlp reports as "Video unavailable" and looks like an IP ban.
 `mweb` needs the PO token and the token needs the webpage: **never put
