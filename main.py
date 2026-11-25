@@ -2227,6 +2227,22 @@ def transcribe_video(video_path, slot_timeout=None):
 
     return transcript
 
+# Shared with get_viral_clips's except-block below: a Gemini (or local LLM
+# server) call that failed with one of these after exhausting its retries in
+# _run_gemini_stage is an infrastructure blip, not a verdict on the video.
+# Both places must agree on the vocabulary, or an outage's error text can
+# drift into looking like a content failure by the time app.py classifies it.
+_TRANSIENT_GEMINI_MARKERS = (
+    '503', 'UNAVAILABLE', '429', 'RESOURCE_EXHAUSTED',
+    '500', 'INTERNAL', 'overloaded', 'Deadline',
+    'empty response body', 'did not contain a JSON object',
+    'Failed to parse Gemini JSON response',
+    # OpenAI-compatible servers: model still loading, busy, or a
+    # small model that skipped a required field this time.
+    'ConnectError', 'ReadTimeout', 'RemoteProtocolError', '502', '504',
+    'validation error')
+
+
 def _run_gemini_stage(client, model_name, prompt, schema):
     """One schema-enforced model call with transient-error backoff.
     Returns (parsed_dict, cost_analysis).
@@ -2266,15 +2282,7 @@ def _run_gemini_stage(client, model_name, prompt, schema):
             raise  # deterministic policy block — never retry
         except Exception as e:
             msg = str(e)
-            transient = any(tok in msg for tok in (
-                '503', 'UNAVAILABLE', '429', 'RESOURCE_EXHAUSTED',
-                '500', 'INTERNAL', 'overloaded', 'Deadline',
-                'empty response body', 'did not contain a JSON object',
-                'Failed to parse Gemini JSON response',
-                # OpenAI-compatible servers: model still loading, busy, or a
-                # small model that skipped a required field this time.
-                'ConnectError', 'ReadTimeout', 'RemoteProtocolError', '502', '504',
-                'validation error'))
+            transient = any(tok in msg for tok in _TRANSIENT_GEMINI_MARKERS)
             if attempt == max_attempts or not transient:
                 raise
             wait = 5 * (2 ** (attempt - 1))
@@ -2516,6 +2524,19 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None, campai
         print(f"🚫 {e}")
         raise
     except Exception as e:
+        msg = str(e)
+        if any(tok in msg for tok in _TRANSIENT_GEMINI_MARKERS):
+            # _run_gemini_stage already retried this 3x and gave up — Gemini
+            # (or the local LLM server) never actually answered, so this
+            # video's content was never judged. Swallowing it to None here
+            # turns into the generic "did not return usable clips" RuntimeError
+            # below, which matches app.py's _PERMANENT_MARKERS ("clip detection
+            # failed") and blocks the auto-retry that exists specifically for a
+            # Gemini outage (prod 25-nov-2026: a clean transcript, 3x "503
+            # UNAVAILABLE... high demand", filed as a permanent content
+            # failure and never retried). Let the real error surface instead.
+            print(f"❌ Gemini Error (transient, propagating for auto-retry): {e}")
+            raise
         print(f"❌ Gemini Error: {e}")
         return None
 

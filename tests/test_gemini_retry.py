@@ -10,6 +10,8 @@ import pytest
 # main pulls in cv2/torch/mediapipe at import time; the minimal CI env lacks
 # them, so skip there. Runs fully in the container/local where deps exist.
 main = pytest.importorskip("main")
+# app pulls in dotenv/fastapi/cloud at import time; same minimal-CI caveat.
+app = pytest.importorskip("app")
 
 
 class _FakeResponse:
@@ -144,3 +146,47 @@ def test_clean_response_is_not_flagged_as_blocked():
         candidates = []
 
     gemini_worker.raise_if_blocked(_Resp())  # must not raise
+
+
+def _minimal_transcript():
+    return {
+        "language": "en",
+        "segments": [{"start": 0.0, "end": 5.0, "text": "hello there",
+                      "words": [{"word": "hello", "start": 0.0, "end": 1.0},
+                                {"word": "there", "start": 1.0, "end": 2.0}]}],
+    }
+
+
+def test_outage_that_exhausts_retries_propagates_instead_of_no_clips_found(monkeypatch):
+    """Prod 25-nov-2026: a clean transcript, Gemini 503 UNAVAILABLE ("high
+    demand") on all 3 attempts, and the job was filed as "the AI model did not
+    return usable clips" — one of app.py's _PERMANENT_MARKERS — so the
+    auto-retry that exists specifically for a Gemini outage never fired.
+
+    get_viral_clips used to catch everything from the scoring/detail stage in
+    one except-Exception-return-None, which is right for "Gemini answered and
+    found nothing" but wrong for "Gemini's retries ran out and it never
+    answered at all" — that case must surface its real (transient-looking)
+    error text instead of being swallowed into the generic one.
+    """
+    monkeypatch.setattr(main.llm_backend, "active", lambda: True)
+    monkeypatch.setattr(main.llm_backend, "model_name", lambda: "fake-local-model")
+
+    calls = {"n": 0}
+
+    def _always_503(prompt, schema, model=None):
+        calls["n"] += 1
+        raise Exception("503 UNAVAILABLE. {'error': {'code': 503, 'message': "
+                         "'This model is currently experiencing high demand.'}}")
+
+    monkeypatch.setattr(main.llm_backend, "generate_json", _always_503)
+
+    with pytest.raises(Exception) as exc:
+        main.get_viral_clips(_minimal_transcript(), video_duration=60.0)
+
+    assert "503" in str(exc.value) or "UNAVAILABLE" in str(exc.value)
+    assert calls["n"] >= 3  # the retry loop ran its full course first
+
+    # And the message that actually escapes is one app.py's own transient
+    # vocabulary recognizes — the whole point of not swallowing it.
+    assert app.is_transient_failure([f"❌ Gemini Error (transient, propagating for auto-retry): {exc.value}"])
